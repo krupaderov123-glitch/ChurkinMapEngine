@@ -1,7 +1,6 @@
 package ru.taxichurkin.engine
 
-import kotlin.math.abs
-import kotlin.math.hypot
+import kotlin.math.*
 
 class ChurkinCameraBounds(
     private val rings: List<List<Pair<Double, Double>>>
@@ -12,35 +11,12 @@ class ChurkinCameraBounds(
         val y: Double
     )
 
+    data class CameraOffset(
+        val x: Double,
+        val y: Double
+    )
+
     private val epsilon = 1e-9
-
-    private fun isOnSegment(
-        p: Point,
-        a: Point,
-        b: Point
-    ): Boolean {
-        val dx = b.x - a.x
-        val dy = b.y - a.y
-        val length = hypot(dx, dy)
-
-        if (length < epsilon) {
-            return hypot(p.x - a.x, p.y - a.y) < epsilon
-        }
-
-        val cross = abs(
-            (p.x - a.x) * dy -
-            (p.y - a.y) * dx
-        )
-
-        if (cross > epsilon * length) return false
-
-        val dot =
-            (p.x - a.x) * dx +
-            (p.y - a.y) * dy
-
-        return dot >= -epsilon &&
-            dot <= length * length + epsilon
-    }
 
     fun contains(point: Point): Boolean {
         var inside = false
@@ -51,24 +27,25 @@ class ChurkinCameraBounds(
             var j = ring.lastIndex
 
             for (i in ring.indices) {
-                val a = Point(
-                    ring[i].first,
-                    ring[i].second
-                )
+                val a = ring[i]
+                val b = ring[j]
 
-                val b = Point(
-                    ring[j].first,
-                    ring[j].second
-                )
-
-                if (isOnSegment(point, a, b)) {
+                if (
+                    pointOnSegment(
+                        point.x, point.y,
+                        a.first, a.second,
+                        b.first, b.second
+                    )
+                ) {
                     return true
                 }
 
-                if ((a.y > point.y) != (b.y > point.y)) {
+                if ((a.second > point.y) != (b.second > point.y)) {
                     val intersectionX =
-                        a.x + (point.y - a.y) *
-                        (b.x - a.x) / (b.y - a.y)
+                        a.first +
+                        (point.y - a.second) *
+                        (b.first - a.first) /
+                        (b.second - a.second)
 
                     if (point.x < intersectionX) {
                         inside = !inside
@@ -82,57 +59,56 @@ class ChurkinCameraBounds(
         return inside
     }
 
-    private fun closestPointOnSegment(
-        p: Point,
-        a: Point,
-        b: Point
-    ): Point {
-        val dx = b.x - a.x
-        val dy = b.y - a.y
+    private fun pointOnSegment(
+        px: Double,
+        py: Double,
+        ax: Double,
+        ay: Double,
+        bx: Double,
+        by: Double
+    ): Boolean {
 
-        val lengthSquared = dx * dx + dy * dy
+        val dx = bx - ax
+        val dy = by - ay
 
-        if (lengthSquared < epsilon * epsilon) {
-            return a
+        val length = hypot(dx, dy)
+
+        if (length < epsilon) {
+            return hypot(px - ax, py - ay) < epsilon
         }
 
-        val t = (
-            ((p.x - a.x) * dx +
-             (p.y - a.y) * dy) / lengthSquared
-        ).coerceIn(0.0, 1.0)
-
-        return Point(
-            a.x + t * dx,
-            a.y + t * dy
+        val cross = abs(
+            (px - ax) * dy -
+            (py - ay) * dx
         )
+
+        if (cross > epsilon * length) return false
+
+        val dot =
+            (px - ax) * dx +
+            (py - ay) * dy
+
+        return dot >= -epsilon &&
+            dot <= length * length + epsilon
     }
 
     fun constrain(point: Point): Point {
         if (contains(point)) return point
 
-        var closest: Point? = null
+        var closest = point
         var bestDistance = Double.POSITIVE_INFINITY
 
         for (ring in rings) {
             if (ring.size < 2) continue
 
             for (i in ring.indices) {
-                val a = Point(
-                    ring[i].first,
-                    ring[i].second
-                )
+                val a = ring[i]
+                val b = ring[(i + 1) % ring.size]
 
-                val next = ring[(i + 1) % ring.size]
-
-                val b = Point(
-                    next.first,
-                    next.second
-                )
-
-                val candidate = closestPointOnSegment(
+                val candidate = closestPoint(
                     point,
-                    a,
-                    b
+                    Point(a.first, a.second),
+                    Point(b.first, b.second)
                 )
 
                 val distance = hypot(
@@ -147,6 +123,84 @@ class ChurkinCameraBounds(
             }
         }
 
-        return closest ?: point
+        return closest
     }
-}
+
+    private fun closestPoint(
+        p: Point,
+        a: Point,
+        b: Point
+    ): Point {
+
+        val dx = b.x - a.x
+        val dy = b.y - a.y
+
+        val lengthSquared = dx * dx + dy * dy
+
+        if (lengthSquared < epsilon * epsilon) {
+            return a
+        }
+
+        val t = (
+            ((p.x - a.x) * dx +
+             (p.y - a.y) * dy) /
+                lengthSquared
+        ).coerceIn(0.0, 1.0)
+
+        return Point(
+            a.x + t * dx,
+            a.y + t * dy
+        )
+    }
+
+    /**
+     * Ограничение карты по размерам экрана.
+     *
+     * projectedRings — координаты границы в пикселях
+     * без текущего смещения камеры.
+     *
+     * offsetX / offsetY — запрошенное смещение.
+     */
+    fun constrainViewport(
+        projectedRings: List<List<Point>>,
+        screenWidth: Int,
+        screenHeight: Int,
+        offsetX: Double,
+        offsetY: Double
+    ): CameraOffset {
+
+        if (
+            projectedRings.isEmpty() ||
+            screenWidth <= 0 ||
+            screenHeight <= 0
+        ) {
+            return CameraOffset(offsetX, offsetY)
+        }
+
+        var minX = Double.POSITIVE_INFINITY
+        var maxX = Double.NEGATIVE_INFINITY
+        var minY = Double.POSITIVE_INFINITY
+        var maxY = Double.NEGATIVE_INFINITY
+
+        for (ring in projectedRings) {
+            for (point in ring) {
+                minX = min(minX, point.x)
+                maxX = max(maxX, point.x)
+                minY = min(minY, point.y)
+                maxY = max(maxY, point.y)
+            }
+        }
+
+        if (
+            !minX.isFinite() ||
+            !maxX.isFinite() ||
+            !minY.isFinite() ||
+            !maxY.isFinite()
+        ) {
+            return CameraOffset(offsetX, offsetY)
+        }
+
+        val screenW = screenWidth.toDouble()
+        val screenH = screenHeight.toDouble()
+
+        // Мини
