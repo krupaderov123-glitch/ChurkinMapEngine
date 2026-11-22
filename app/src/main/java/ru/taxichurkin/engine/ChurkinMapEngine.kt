@@ -36,6 +36,8 @@ class ChurkinMapEngine(context: Context) : View(context) {
     private val boundary =
         mutableListOf<List<Pair<Double, Double>>>()
 
+    private var cameraBounds: ChurkinCameraBounds? = null
+
     private var loadError: String? = null
 
     init {
@@ -86,6 +88,10 @@ class ChurkinMapEngine(context: Context) : View(context) {
                 }
             }
 
+            if (boundary.isNotEmpty()) {
+                cameraBounds = ChurkinCameraBounds(boundary)
+            }
+
         } catch (e: Exception) {
             loadError = e.message ?: "GeoJSON error"
         }
@@ -116,83 +122,76 @@ class ChurkinMapEngine(context: Context) : View(context) {
             offsetY
     }
 
-    // Проверяем, находится ли точка внутри полигона
+    // Экранная точка -> географические координаты
+    private fun screenToGeo(
+        x: Double,
+        y: Double
+    ): ChurkinCameraBounds.Point {
+
+        val scale = 256.0 * 2.0.pow(zoom)
+
+        val lng = centerLng +
+            (x - width / 2.0 - offsetX) /
+            scale * 360.0
+
+        val mercator = mercatorY(centerLat) -
+            (y - height / 2.0 - offsetY) *
+            (2.0 * Math.PI) / scale
+
+        val lat = Math.toDegrees(
+            2.0 * atan(exp(mercator)) - Math.PI / 2.0
+        )
+
+        return ChurkinCameraBounds.Point(lng, lat)
+    }
+
+    // Удерживаем центр камеры внутри Чуркина
+    private fun constrainCamera() {
+
+        val bounds = cameraBounds ?: return
+
+        if (width == 0 || height == 0) return
+
+        val center = screenToGeo(
+            width / 2.0,
+            height / 2.0
+        )
+
+        val allowed = bounds.constrain(center)
+
+        if (
+            abs(allowed.x - center.x) < 1e-12 &&
+            abs(allowed.y - center.y) < 1e-12
+        ) {
+            return
+        }
+
+        val scale = 256.0 * 2.0.pow(zoom)
+
+        offsetX +=
+            (center.x - allowed.x) / 360.0 * scale
+
+        offsetY -=
+            (mercatorY(center.y) - mercatorY(allowed.y)) *
+            scale / (2.0 * Math.PI)
+    }
+
     private fun isInsideBoundary(
         x: Double,
         y: Double
     ): Boolean {
 
-        var inside = false
+        val bounds = cameraBounds ?: return false
 
-        for (ring in boundary) {
-            var j = ring.size - 1
-
-            for (i in ring.indices) {
-
-                val xi = projectX(ring[i].first)
-                val yi = projectY(ring[i].second)
-
-                val xj = projectX(ring[j].first)
-                val yj = projectY(ring[j].second)
-
-                val intersects =
-                    ((yi > y) != (yj > y)) &&
-                    (x < (xj - xi) * (y - yi) /
-                        (yj - yi) + xi)
-
-                if (intersects) {
-                    inside = !inside
-                }
-
-                j = i
-            }
-        }
-
-        return inside
-    }
-
-    // Проверяем новое смещение до применения
-    private fun canMove(
-        newOffsetX: Double,
-        newOffsetY: Double
-    ): Boolean {
-
-        val oldX = offsetX
-        val oldY = offsetY
-
-        offsetX = newOffsetX
-        offsetY = newOffsetY
-
-        val allowed = isInsideBoundary(
-            width / 2.0,
-            height / 2.0
-        )
-
-        offsetX = oldX
-        offsetY = oldY
-
-        return allowed
+        return bounds.contains(screenToGeo(x, y))
     }
 
     private fun moveMap(dx: Double, dy: Double) {
 
-        val newX = offsetX + dx
-        val newY = offsetY + dy
+        offsetX += dx
+        offsetY += dy
 
-        if (canMove(newX, newY)) {
-            offsetX = newX
-            offsetY = newY
-        } else {
-            // Проверяем движение по каждой оси отдельно
-            if (canMove(newX, offsetY)) {
-                offsetX = newX
-            }
-
-            if (canMove(offsetX, newY)) {
-                offsetY = newY
-            }
-        }
-
+        constrainCamera()
         invalidate()
     }
 
@@ -211,8 +210,6 @@ class ChurkinMapEngine(context: Context) : View(context) {
                 }
 
                 val oldZoom = zoom
-                val oldOffsetX = offsetX
-                val oldOffsetY = offsetY
 
                 zoom = (
                     zoom + ln(factor) / ln(2.0)
@@ -223,27 +220,34 @@ class ChurkinMapEngine(context: Context) : View(context) {
                 val focusX = detector.focusX.toDouble()
                 val focusY = detector.focusY.toDouble()
 
-                val newOffsetX =
-                    focusX + (oldOffsetX - focusX) * actualFactor
+                // Масштабирование относительно точки между пальцами
+                offsetX =
+                    (offsetX + width / 2.0 - focusX) *
+                    actualFactor +
+                    focusX - width / 2.0
 
-                val newOffsetY =
-                    focusY + (oldOffsetY - focusY) * actualFactor
+                offsetY =
+                    (offsetY + height / 2.0 - focusY) *
+                    actualFactor +
+                    focusY - height / 2.0
 
-                // Масштаб уже изменён — проверяем новые координаты
-                if (canMove(newOffsetX, newOffsetY)) {
-                    offsetX = newOffsetX
-                    offsetY = newOffsetY
-                } else {
-                    // Сохраняем центр в допустимой области
-                    offsetX = oldOffsetX * actualFactor
-                    offsetY = oldOffsetY * actualFactor
-                }
+                constrainCamera()
 
                 invalidate()
                 return true
             }
         }
     )
+
+    override fun onSizeChanged(
+        w: Int,
+        h: Int,
+        oldw: Int,
+        oldh: Int
+    ) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        constrainCamera()
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -355,15 +359,15 @@ class ChurkinMapEngine(context: Context) : View(context) {
             40f, 175f, paint
         )
 
-        paint.color = if (
-            boundary.isNotEmpty() &&
-            isInsideBoundary(width / 2.0, height / 2.0)
-        ) Color.GREEN else Color.RED
+        val inside = isInsideBoundary(
+            width / 2.0,
+            height / 2.0
+        )
+
+        paint.color = if (inside) Color.GREEN else Color.RED
 
         canvas.drawText(
-            if (boundary.isNotEmpty() &&
-                isInsideBoundary(width / 2.0, height / 2.0)
-            ) "INSIDE CHURKIN"
+            if (inside) "INSIDE CHURKIN"
             else "OUTSIDE CHURKIN",
             40f, 215f, paint
         )
