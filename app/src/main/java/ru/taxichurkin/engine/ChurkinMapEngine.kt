@@ -176,80 +176,44 @@ class ChurkinMapEngine(context: Context) : View(context) {
         zoom = zoom.coerceIn(minimumZoom, 19.0)
     }
 
-    // Расстояние от точки до отрезка в пикселях
-    private fun distanceToSegment(
-        px: Double,
-        py: Double,
-        ax: Double,
-        ay: Double,
-        bx: Double,
-        by: Double
-    ): Double {
+    // Центрируем район при запуске
+    private fun centerBoundary() {
+        if (boundary.isEmpty()) return
 
-        val dx = bx - ax
-        val dy = by - ay
-
-        val lengthSquared = dx * dx + dy * dy
-
-        if (lengthSquared < 1e-12) {
-            return hypot(px - ax, py - ay)
-        }
-
-        val t = (
-            ((px - ax) * dx + (py - ay) * dy) /
-                lengthSquared
-        ).coerceIn(0.0, 1.0)
-
-        val closestX = ax + t * dx
-        val closestY = ay + t * dy
-
-        return hypot(
-            px - closestX,
-            py - closestY
-        )
-    }
-
-    // Находим расстояние от центра экрана до границы
-    private fun distanceToBoundary(): Double {
-
-        var nearest = Double.POSITIVE_INFINITY
-
-        val cx = width / 2.0
-        val cy = height / 2.0
+        var minLng = Double.POSITIVE_INFINITY
+        var maxLng = Double.NEGATIVE_INFINITY
+        var minMercY = Double.POSITIVE_INFINITY
+        var maxMercY = Double.NEGATIVE_INFINITY
 
         for (ring in boundary) {
-            if (ring.size < 2) continue
+            for (point in ring) {
+                minLng = min(minLng, point.first)
+                maxLng = max(maxLng, point.first)
 
-            for (i in ring.indices) {
-
-                val a = ring[i]
-                val b = ring[(i + 1) % ring.size]
-
-                val distance = distanceToSegment(
-                    cx,
-                    cy,
-                    projectX(a.first),
-                    projectY(a.second),
-                    projectX(b.first),
-                    projectY(b.second)
-                )
-
-                nearest = min(nearest, distance)
+                val y = mercatorY(point.second)
+                minMercY = min(minMercY, y)
+                maxMercY = max(maxMercY, y)
             }
         }
 
-        return nearest
+        val midLng = (minLng + maxLng) / 2.0
+        val midMercY = (minMercY + maxMercY) / 2.0
+
+        offsetX =
+            (centerLng - midLng) / 360.0 * mapScale()
+
+        offsetY =
+            (midMercY - mercatorY(centerLat)) *
+            mapScale() / (2.0 * Math.PI)
     }
 
-    // Проверяем положение камеры с учётом отступа
+    // Проверяем, что центр камеры находится внутри района
     private fun isCameraAllowed(
         x: Double,
         y: Double
     ): Boolean {
 
         val bounds = cameraBounds ?: return true
-
-        if (width <= 0 || height <= 0) return true
 
         val oldX = offsetX
         val oldY = offsetY
@@ -262,96 +226,16 @@ class ChurkinMapEngine(context: Context) : View(context) {
             height / 2.0
         )
 
-        val inside = bounds.contains(center)
-
-        val margin = width * 0.30
-
-        val distance = distanceToBoundary()
+        val allowed = bounds.contains(center)
 
         offsetX = oldX
         offsetY = oldY
 
-        return inside && distance >= margin
+        return allowed
     }
 
-    // Находим максимально допустимое движение
-    private fun applyLimitedMovement(
-        dx: Double,
-        dy: Double
-    ) {
-
-        val startX = offsetX
-        val startY = offsetY
-
-        val targetX = startX + dx
-        val targetY = startY + dy
-
-        if (isCameraAllowed(targetX, targetY)) {
-            offsetX = targetX
-            offsetY = targetY
-            return
-        }
-
-        // Ищем точку остановки вдоль движения
-        if (isCameraAllowed(startX, startY)) {
-
-            var low = 0.0
-            var high = 1.0
-
-            repeat(20) {
-                val mid = (low + high) / 2.0
-
-                val x = startX + dx * mid
-                val y = startY + dy * mid
-
-                if (isCameraAllowed(x, y)) {
-                    low = mid
-                } else {
-                    high = mid
-                }
-            }
-
-            offsetX = startX + dx * low
-            offsetY = startY + dy * low
-        }
-
-        // Пробуем скольжение вдоль границы
-        if (isCameraAllowed(offsetX + dx, offsetY)) {
-            offsetX += dx
-        }
-
-        if (isCameraAllowed(offsetX, offsetY + dy)) {
-            offsetY += dy
-        }
-    }
-
-    // Возвращаем камеру в допустимую область
     private fun constrainCamera() {
 
-        if (cameraBounds == null) return
-        if (width <= 0 || height <= 0) return
-
-        if (isCameraAllowed(offsetX, offsetY)) return
-
-        val currentX = offsetX
-        val currentY = offsetY
-
-        // Опорное положение — исходный центр карты
-        if (isCameraAllowed(0.0, 0.0)) {
-
-            offsetX = 0.0
-            offsetY = 0.0
-
-            applyLimitedMovement(
-                currentX,
-                currentY
-            )
-
-            return
-        }
-
-        // Если на текущем масштабе отступ слишком велик,
-        // удерживаем центр внутри настоящего полигона.
         val bounds = cameraBounds ?: return
 
         val center = screenToGeo(
@@ -372,7 +256,24 @@ class ChurkinMapEngine(context: Context) : View(context) {
     }
 
     private fun moveMap(dx: Double, dy: Double) {
-        applyLimitedMovement(dx, dy)
+
+        val targetX = offsetX + dx
+        val targetY = offsetY + dy
+
+        if (isCameraAllowed(targetX, targetY)) {
+            offsetX = targetX
+            offsetY = targetY
+        } else {
+
+            if (isCameraAllowed(targetX, offsetY)) {
+                offsetX = targetX
+            }
+
+            if (isCameraAllowed(offsetX, targetY)) {
+                offsetY = targetY
+            }
+        }
+
         invalidate()
     }
 
@@ -428,6 +329,7 @@ class ChurkinMapEngine(context: Context) : View(context) {
         super.onSizeChanged(w, h, oldw, oldh)
 
         calculateMinimumZoom()
+        centerBoundary()
         constrainCamera()
     }
 
