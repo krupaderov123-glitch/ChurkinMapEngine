@@ -30,12 +30,11 @@ class ChurkinMapEngine(context: Context) : View(context) {
 
     private val baseGridSize = 100.0
 
-    // Центр карты
     private val centerLat = 43.095
     private val centerLng = 131.930
 
-    // Координаты границы Чуркина
-    private val boundary = mutableListOf<List<Pair<Double, Double>>>()
+    private val boundary =
+        mutableListOf<List<Pair<Double, Double>>>()
 
     private var loadError: String? = null
 
@@ -67,15 +66,18 @@ class ChurkinMapEngine(context: Context) : View(context) {
 
                 for (r in 0 until rings.length()) {
                     val coordinates = rings.getJSONArray(r)
-                    val points = mutableListOf<Pair<Double, Double>>()
+                    val points =
+                        mutableListOf<Pair<Double, Double>>()
 
                     for (j in 0 until coordinates.length()) {
                         val point = coordinates.getJSONArray(j)
 
-                        val lng = point.getDouble(0)
-                        val lat = point.getDouble(1)
-
-                        points.add(Pair(lng, lat))
+                        points.add(
+                            Pair(
+                                point.getDouble(0),
+                                point.getDouble(1)
+                            )
+                        )
                     }
 
                     if (points.size >= 3) {
@@ -85,8 +87,113 @@ class ChurkinMapEngine(context: Context) : View(context) {
             }
 
         } catch (e: Exception) {
-            loadError = e.message ?: "Ошибка загрузки GeoJSON"
+            loadError = e.message ?: "GeoJSON error"
         }
+    }
+
+    private fun mercatorY(lat: Double): Double {
+        val radians = Math.toRadians(
+            lat.coerceIn(-85.05112878, 85.05112878)
+        )
+
+        return ln(tan(Math.PI / 4.0 + radians / 2.0))
+    }
+
+    private fun projectX(lng: Double): Double {
+        val scale = 256.0 * 2.0.pow(zoom)
+
+        return width / 2.0 +
+            (lng - centerLng) / 360.0 * scale +
+            offsetX
+    }
+
+    private fun projectY(lat: Double): Double {
+        val scale = 256.0 * 2.0.pow(zoom)
+
+        return height / 2.0 -
+            (mercatorY(lat) - mercatorY(centerLat)) *
+            scale / (2.0 * Math.PI) +
+            offsetY
+    }
+
+    // Проверяем, находится ли точка внутри полигона
+    private fun isInsideBoundary(
+        x: Double,
+        y: Double
+    ): Boolean {
+
+        var inside = false
+
+        for (ring in boundary) {
+            var j = ring.size - 1
+
+            for (i in ring.indices) {
+
+                val xi = projectX(ring[i].first)
+                val yi = projectY(ring[i].second)
+
+                val xj = projectX(ring[j].first)
+                val yj = projectY(ring[j].second)
+
+                val intersects =
+                    ((yi > y) != (yj > y)) &&
+                    (x < (xj - xi) * (y - yi) /
+                        (yj - yi) + xi)
+
+                if (intersects) {
+                    inside = !inside
+                }
+
+                j = i
+            }
+        }
+
+        return inside
+    }
+
+    // Проверяем новое смещение до применения
+    private fun canMove(
+        newOffsetX: Double,
+        newOffsetY: Double
+    ): Boolean {
+
+        val oldX = offsetX
+        val oldY = offsetY
+
+        offsetX = newOffsetX
+        offsetY = newOffsetY
+
+        val allowed = isInsideBoundary(
+            width / 2.0,
+            height / 2.0
+        )
+
+        offsetX = oldX
+        offsetY = oldY
+
+        return allowed
+    }
+
+    private fun moveMap(dx: Double, dy: Double) {
+
+        val newX = offsetX + dx
+        val newY = offsetY + dy
+
+        if (canMove(newX, newY)) {
+            offsetX = newX
+            offsetY = newY
+        } else {
+            // Проверяем движение по каждой оси отдельно
+            if (canMove(newX, offsetY)) {
+                offsetX = newX
+            }
+
+            if (canMove(offsetX, newY)) {
+                offsetY = newY
+            }
+        }
+
+        invalidate()
     }
 
     private val scaleDetector = ScaleGestureDetector(
@@ -104,6 +211,8 @@ class ChurkinMapEngine(context: Context) : View(context) {
                 }
 
                 val oldZoom = zoom
+                val oldOffsetX = offsetX
+                val oldOffsetY = offsetY
 
                 zoom = (
                     zoom + ln(factor) / ln(2.0)
@@ -114,48 +223,27 @@ class ChurkinMapEngine(context: Context) : View(context) {
                 val focusX = detector.focusX.toDouble()
                 val focusY = detector.focusY.toDouble()
 
-                offsetX = focusX +
-                    (offsetX - focusX) * actualFactor
+                val newOffsetX =
+                    focusX + (oldOffsetX - focusX) * actualFactor
 
-                offsetY = focusY +
-                    (offsetY - focusY) * actualFactor
+                val newOffsetY =
+                    focusY + (oldOffsetY - focusY) * actualFactor
+
+                // Масштаб уже изменён — проверяем новые координаты
+                if (canMove(newOffsetX, newOffsetY)) {
+                    offsetX = newOffsetX
+                    offsetY = newOffsetY
+                } else {
+                    // Сохраняем центр в допустимой области
+                    offsetX = oldOffsetX * actualFactor
+                    offsetY = oldOffsetY * actualFactor
+                }
 
                 invalidate()
                 return true
             }
         }
     )
-
-    private fun mercatorY(lat: Double): Double {
-        val radians = Math.toRadians(
-            lat.coerceIn(-85.05112878, 85.05112878)
-        )
-
-        return ln(
-            tan(Math.PI / 4.0 + radians / 2.0)
-        )
-    }
-
-    private fun projectX(lng: Double): Float {
-        val scale = 256.0 * 2.0.pow(zoom)
-
-        return (
-            width / 2.0 +
-            (lng - centerLng) / 360.0 * scale +
-            offsetX
-        ).toFloat()
-    }
-
-    private fun projectY(lat: Double): Float {
-        val scale = 256.0 * 2.0.pow(zoom)
-
-        return (
-            height / 2.0 -
-            (mercatorY(lat) - mercatorY(centerLat)) *
-            scale / (2.0 * Math.PI) +
-            offsetY
-        ).toFloat()
-    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -179,10 +267,8 @@ class ChurkinMapEngine(context: Context) : View(context) {
 
         while (x < width) {
             canvas.drawLine(
-                x.toFloat(),
-                0f,
-                x.toFloat(),
-                height.toFloat(),
+                x.toFloat(), 0f,
+                x.toFloat(), height.toFloat(),
                 paint
             )
             x += gridSize
@@ -192,10 +278,8 @@ class ChurkinMapEngine(context: Context) : View(context) {
 
         while (y < height) {
             canvas.drawLine(
-                0f,
-                y.toFloat(),
-                width.toFloat(),
-                y.toFloat(),
+                0f, y.toFloat(),
+                width.toFloat(), y.toFloat(),
                 paint
             )
             y += gridSize
@@ -212,8 +296,8 @@ class ChurkinMapEngine(context: Context) : View(context) {
         for (ring in boundary) {
             ring.forEachIndexed { index, point ->
 
-                val x = projectX(point.first)
-                val y = projectY(point.second)
+                val x = projectX(point.first).toFloat()
+                val y = projectY(point.second).toFloat()
 
                 if (index == 0) {
                     path.moveTo(x, y)
@@ -229,13 +313,11 @@ class ChurkinMapEngine(context: Context) : View(context) {
 
         paint.style = Paint.Style.FILL
         paint.color = fillColor
-
         canvas.drawPath(path, paint)
 
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 4f
         paint.color = borderColor
-
         canvas.drawPath(path, paint)
 
         paint.style = Paint.Style.FILL
@@ -258,34 +340,39 @@ class ChurkinMapEngine(context: Context) : View(context) {
 
         canvas.drawText(
             "ChurkinMapEngine",
-            40f,
-            80f,
-            paint
+            40f, 80f, paint
         )
 
         canvas.drawText(
             "Zoom: %.1f".format(zoom),
-            40f,
-            130f,
-            paint
+            40f, 130f, paint
         )
 
         paint.textSize = 27f
 
         canvas.drawText(
             "Boundary rings: ${boundary.size}",
-            40f,
-            175f,
-            paint
+            40f, 175f, paint
+        )
+
+        paint.color = if (
+            boundary.isNotEmpty() &&
+            isInsideBoundary(width / 2.0, height / 2.0)
+        ) Color.GREEN else Color.RED
+
+        canvas.drawText(
+            if (boundary.isNotEmpty() &&
+                isInsideBoundary(width / 2.0, height / 2.0)
+            ) "INSIDE CHURKIN"
+            else "OUTSIDE CHURKIN",
+            40f, 215f, paint
         )
 
         if (loadError != null) {
             paint.color = Color.RED
             canvas.drawText(
                 "GeoJSON loading error",
-                40f,
-                215f,
-                paint
+                40f, 255f, paint
             )
         }
     }
@@ -311,13 +398,13 @@ class ChurkinMapEngine(context: Context) : View(context) {
                     val dx = event.x - lastX
                     val dy = event.y - lastY
 
-                    offsetX += dx
-                    offsetY += dy
-
                     lastX = event.x
                     lastY = event.y
 
-                    invalidate()
+                    moveMap(
+                        dx.toDouble(),
+                        dy.toDouble()
+                    )
                 }
 
                 return true
