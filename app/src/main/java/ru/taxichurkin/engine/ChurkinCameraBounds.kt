@@ -203,4 +203,29 @@ class ChurkinCameraBounds(
         val screenW = screenWidth.toDouble()
         val screenH = screenHeight.toDouble()
 
-        // Мини
+        // Минимальная часть экрана, которую должен
+        // занимать прямоугольник охвата Чуркина.
+        val visibleWidth = screenW * 0.75
+        val visibleHeight = screenH * 0.75
+
+        val minOffsetX = visibleWidth - maxX
+        val maxOffsetX = screenW - visibleWidth - minX
+
+        val minOffsetY = visibleHeight - maxY
+        val maxOffsetY = screenH - visibleHeight - minY
+
+        val resultX = if (minOffsetX <= maxOffsetX) {
+            offsetX.coerceIn(minOffsetX, maxOffsetX)
+        } else {
+            screenW / 2.0 - (minX + maxX) / 2.0
+        }
+
+        val resultY = if (minOffsetY <= maxOffsetY) {
+            offsetY.coerceIn(minOffsetY, maxOffsetY)
+        } else {
+            screenH / 2.0 - (minY + maxY) / 2.0
+        }
+
+        return CameraOffset(resultX, resultY)
+    }
+}
