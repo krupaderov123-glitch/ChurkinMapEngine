@@ -29,10 +29,10 @@ class ChurkinMapEngine(context: Context) : View(context) {
     private var lastX = 0f
     private var lastY = 0f
 
-    private val baseGridSize = 100.0
-
     private val centerLat = 43.095
     private val centerLng = 131.930
+
+    private val baseGridSize = 100.0
 
     private val boundary =
         mutableListOf<List<Pair<Double, Double>>>()
@@ -57,6 +57,7 @@ class ChurkinMapEngine(context: Context) : View(context) {
             val features = root.getJSONArray("features")
 
             for (i in 0 until features.length()) {
+
                 val geometry = features
                     .getJSONObject(i)
                     .getJSONObject("geometry")
@@ -68,11 +69,14 @@ class ChurkinMapEngine(context: Context) : View(context) {
                 val rings = geometry.getJSONArray("coordinates")
 
                 for (r in 0 until rings.length()) {
+
                     val coordinates = rings.getJSONArray(r)
+
                     val points =
                         mutableListOf<Pair<Double, Double>>()
 
                     for (j in 0 until coordinates.length()) {
+
                         val point = coordinates.getJSONArray(j)
 
                         points.add(
@@ -103,71 +107,95 @@ class ChurkinMapEngine(context: Context) : View(context) {
             lat.coerceIn(-85.05112878, 85.05112878)
         )
 
-        return ln(tan(Math.PI / 4.0 + radians / 2.0))
+        return ln(
+            tan(Math.PI / 4.0 + radians / 2.0)
+        )
     }
 
     private fun mapScale(): Double {
         return 256.0 * 2.0.pow(zoom)
     }
 
-    private fun projectX(lng: Double): Double {
+    private fun projectX(
+        lng: Double,
+        cameraX: Double = offsetX
+    ): Double {
         return width / 2.0 +
             (lng - centerLng) / 360.0 * mapScale() +
-            offsetX
+            cameraX
     }
 
-    private fun projectY(lat: Double): Double {
+    private fun projectY(
+        lat: Double,
+        cameraY: Double = offsetY
+    ): Double {
         return height / 2.0 -
             (mercatorY(lat) - mercatorY(centerLat)) *
             mapScale() / (2.0 * Math.PI) +
-            offsetY
+            cameraY
     }
 
-    private fun screenToGeo(
-        x: Double,
-        y: Double
-    ): ChurkinCameraBounds.Point {
+    private fun projectedBoundary():
+        List<List<ChurkinCameraBounds.Point>> {
 
-        val scale = mapScale()
-
-        val lng = centerLng +
-            (x - width / 2.0 - offsetX) /
-            scale * 360.0
-
-        val mercator = mercatorY(centerLat) -
-            (y - height / 2.0 - offsetY) *
-            (2.0 * Math.PI) / scale
-
-        val lat = Math.toDegrees(
-            2.0 * atan(exp(mercator)) - Math.PI / 2.0
-        )
-
-        return ChurkinCameraBounds.Point(lng, lat)
+        return boundary.map { ring ->
+            ring.map { point ->
+                ChurkinCameraBounds.Point(
+                    projectX(point.first, 0.0),
+                    projectY(point.second, 0.0)
+                )
+            }
+        }
     }
 
     private fun calculateMinimumZoom() {
-        if (boundary.isEmpty() || height <= 0) return
 
-        var minY = Double.POSITIVE_INFINITY
-        var maxY = Double.NEGATIVE_INFINITY
+        if (
+            boundary.isEmpty() ||
+            width <= 0 ||
+            height <= 0
+        ) return
+
+        var minLng = Double.POSITIVE_INFINITY
+        var maxLng = Double.NEGATIVE_INFINITY
+
+        var minMercY = Double.POSITIVE_INFINITY
+        var maxMercY = Double.NEGATIVE_INFINITY
 
         for (ring in boundary) {
             for (point in ring) {
+
+                minLng = min(minLng, point.first)
+                maxLng = max(maxLng, point.first)
+
                 val y = mercatorY(point.second)
 
-                minY = min(minY, y)
-                maxY = max(maxY, y)
+                minMercY = min(minMercY, y)
+                maxMercY = max(maxMercY, y)
             }
         }
 
-        val span = maxY - minY
+        val longitudeSpan = maxLng - minLng
+        val mercatorSpan = maxMercY - minMercY
 
-        if (span <= 0.0 || !span.isFinite()) return
+        if (
+            longitudeSpan <= 0.0 ||
+            mercatorSpan <= 0.0
+        ) return
 
-        val targetHeight = height * 0.85
+        // Район должен быть достаточно крупным
+        // хотя бы по одному измерению.
+        val scaleForWidth =
+            width * 0.90 * 360.0 / longitudeSpan
 
-        val requiredScale =
-            targetHeight * 2.0 * Math.PI / span
+        val scaleForHeight =
+            height * 0.90 * 2.0 *
+            Math.PI / mercatorSpan
+
+        val requiredScale = max(
+            scaleForWidth,
+            scaleForHeight
+        )
 
         minimumZoom = (
             ln(requiredScale / 256.0) / ln(2.0)
@@ -176,104 +204,56 @@ class ChurkinMapEngine(context: Context) : View(context) {
         zoom = zoom.coerceIn(minimumZoom, 19.0)
     }
 
-    // Центрируем район при запуске
     private fun centerBoundary() {
+
         if (boundary.isEmpty()) return
 
-        var minLng = Double.POSITIVE_INFINITY
-        var maxLng = Double.NEGATIVE_INFINITY
-        var minMercY = Double.POSITIVE_INFINITY
-        var maxMercY = Double.NEGATIVE_INFINITY
+        var minX = Double.POSITIVE_INFINITY
+        var maxX = Double.NEGATIVE_INFINITY
 
-        for (ring in boundary) {
+        var minY = Double.POSITIVE_INFINITY
+        var maxY = Double.NEGATIVE_INFINITY
+
+        for (ring in projectedBoundary()) {
             for (point in ring) {
-                minLng = min(minLng, point.first)
-                maxLng = max(maxLng, point.first)
-
-                val y = mercatorY(point.second)
-                minMercY = min(minMercY, y)
-                maxMercY = max(maxMercY, y)
+                minX = min(minX, point.x)
+                maxX = max(maxX, point.x)
+                minY = min(minY, point.y)
+                maxY = max(maxY, point.y)
             }
         }
 
-        val midLng = (minLng + maxLng) / 2.0
-        val midMercY = (minMercY + maxMercY) / 2.0
-
-        offsetX =
-            (centerLng - midLng) / 360.0 * mapScale()
-
-        offsetY =
-            (midMercY - mercatorY(centerLat)) *
-            mapScale() / (2.0 * Math.PI)
+        offsetX = width / 2.0 - (minX + maxX) / 2.0
+        offsetY = height / 2.0 - (minY + maxY) / 2.0
     }
 
-    // Проверяем, что центр камеры находится внутри района
-    private fun isCameraAllowed(
-        x: Double,
-        y: Double
-    ): Boolean {
-
-        val bounds = cameraBounds ?: return true
-
-        val oldX = offsetX
-        val oldY = offsetY
-
-        offsetX = x
-        offsetY = y
-
-        val center = screenToGeo(
-            width / 2.0,
-            height / 2.0
-        )
-
-        val allowed = bounds.contains(center)
-
-        offsetX = oldX
-        offsetY = oldY
-
-        return allowed
-    }
-
+    // Ограничение относительно краёв экрана.
     private fun constrainCamera() {
 
         val bounds = cameraBounds ?: return
 
-        val center = screenToGeo(
-            width / 2.0,
-            height / 2.0
+        if (width <= 0 || height <= 0) return
+
+        val result = bounds.constrainViewport(
+            projectedRings = projectedBoundary(),
+            screenWidth = width,
+            screenHeight = height,
+            offsetX = offsetX,
+            offsetY = offsetY
         )
 
-        val allowed = bounds.constrain(center)
-
-        val scale = mapScale()
-
-        offsetX +=
-            (center.x - allowed.x) / 360.0 * scale
-
-        offsetY -=
-            (mercatorY(center.y) - mercatorY(allowed.y)) *
-            scale / (2.0 * Math.PI)
+        offsetX = result.x
+        offsetY = result.y
     }
 
-    private fun moveMap(dx: Double, dy: Double) {
+    private fun moveMap(
+        dx: Double,
+        dy: Double
+    ) {
+        offsetX += dx
+        offsetY += dy
 
-        val targetX = offsetX + dx
-        val targetY = offsetY + dy
-
-        if (isCameraAllowed(targetX, targetY)) {
-            offsetX = targetX
-            offsetY = targetY
-        } else {
-
-            if (isCameraAllowed(targetX, offsetY)) {
-                offsetX = targetX
-            }
-
-            if (isCameraAllowed(offsetX, targetY)) {
-                offsetY = targetY
-            }
-        }
-
+        constrainCamera()
         invalidate()
     }
 
@@ -287,9 +267,10 @@ class ChurkinMapEngine(context: Context) : View(context) {
 
                 val factor = detector.scaleFactor.toDouble()
 
-                if (!factor.isFinite() || factor <= 0.0) {
-                    return false
-                }
+                if (
+                    !factor.isFinite() ||
+                    factor <= 0.0
+                ) return false
 
                 val oldZoom = zoom
 
@@ -297,10 +278,14 @@ class ChurkinMapEngine(context: Context) : View(context) {
                     zoom + ln(factor) / ln(2.0)
                 ).coerceIn(minimumZoom, 19.0)
 
-                val actualFactor = 2.0.pow(zoom - oldZoom)
+                val actualFactor =
+                    2.0.pow(zoom - oldZoom)
 
-                val focusX = detector.focusX.toDouble()
-                val focusY = detector.focusY.toDouble()
+                val focusX =
+                    detector.focusX.toDouble()
+
+                val focusY =
+                    detector.focusY.toDouble()
 
                 offsetX =
                     (offsetX + width / 2.0 - focusX) *
@@ -340,7 +325,6 @@ class ChurkinMapEngine(context: Context) : View(context) {
 
         drawGrid(canvas)
         drawBoundary(canvas)
-        drawCenter(canvas)
         drawInfo(canvas)
     }
 
@@ -363,6 +347,7 @@ class ChurkinMapEngine(context: Context) : View(context) {
                 height.toFloat(),
                 paint
             )
+
             x += gridSize
         }
 
@@ -376,6 +361,7 @@ class ChurkinMapEngine(context: Context) : View(context) {
                 y.toFloat(),
                 paint
             )
+
             y += gridSize
         }
 
@@ -383,6 +369,7 @@ class ChurkinMapEngine(context: Context) : View(context) {
     }
 
     private fun drawBoundary(canvas: Canvas) {
+
         if (boundary.isEmpty()) return
 
         val path = Path()
@@ -391,8 +378,11 @@ class ChurkinMapEngine(context: Context) : View(context) {
 
             ring.forEachIndexed { index, point ->
 
-                val x = projectX(point.first).toFloat()
-                val y = projectY(point.second).toFloat()
+                val x =
+                    projectX(point.first).toFloat()
+
+                val y =
+                    projectY(point.second).toFloat()
 
                 if (index == 0) {
                     path.moveTo(x, y)
@@ -408,25 +398,16 @@ class ChurkinMapEngine(context: Context) : View(context) {
 
         paint.style = Paint.Style.FILL
         paint.color = fillColor
+
         canvas.drawPath(path, paint)
 
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 4f
         paint.color = borderColor
+
         canvas.drawPath(path, paint)
 
         paint.style = Paint.Style.FILL
-    }
-
-    private fun drawCenter(canvas: Canvas) {
-        paint.color = Color.YELLOW
-
-        canvas.drawCircle(
-            width / 2f,
-            height / 2f,
-            12f,
-            paint
-        )
     }
 
     private fun drawInfo(canvas: Canvas) {
@@ -464,37 +445,13 @@ class ChurkinMapEngine(context: Context) : View(context) {
             paint
         )
 
-        val inside = cameraBounds?.contains(
-            screenToGeo(
-                width / 2.0,
-                height / 2.0
-            )
-        ) ?: false
-
-        paint.color = if (inside) {
-            Color.GREEN
-        } else {
-            Color.RED
-        }
-
-        canvas.drawText(
-            if (inside) {
-                "INSIDE CHURKIN"
-            } else {
-                "OUTSIDE CHURKIN"
-            },
-            40f,
-            255f,
-            paint
-        )
-
         if (loadError != null) {
             paint.color = Color.RED
 
             canvas.drawText(
                 "GeoJSON loading error",
                 40f,
-                295f,
+                255f,
                 paint
             )
         }
