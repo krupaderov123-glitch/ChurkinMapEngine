@@ -16,34 +16,31 @@ class ChurkinCameraBounds(
         val y: Double
     )
 
-    // Проверка точки внутри границы района
+    // Проверяем, находится ли точка внутри района
     fun contains(point: Point): Boolean {
-
         var inside = false
 
         for (ring in rings) {
-
             if (ring.size < 3) continue
 
-            var j = ring.size - 1
+            var j = ring.lastIndex
 
             for (i in ring.indices) {
+                val a = ring[i]
+                val b = ring[j]
 
-                val xi = ring[i].first
-                val yi = ring[i].second
+                if ((a.second > point.y) !=
+                    (b.second > point.y)
+                ) {
+                    val intersectionX =
+                        (b.first - a.first) *
+                        (point.y - a.second) /
+                        (b.second - a.second) +
+                        a.first
 
-                val xj = ring[j].first
-                val yj = ring[j].second
-
-                val intersects =
-                    ((yi > point.y) != (yj > point.y)) &&
-                    (point.x <
-                        (xj - xi) *
-                        (point.y - yi) /
-                        (yj - yi) + xi)
-
-                if (intersects) {
-                    inside = !inside
+                    if (point.x < intersectionX) {
+                        inside = !inside
+                    }
                 }
 
                 j = i
@@ -53,32 +50,26 @@ class ChurkinCameraBounds(
         return inside
     }
 
-    // Ограничение отдельной точки
+    // Находим ближайшую точку границы
     fun constrain(point: Point): Point {
-
-        if (contains(point)) {
-            return point
-        }
+        if (contains(point)) return point
 
         var nearest = point
         var bestDistance = Double.POSITIVE_INFINITY
 
         for (ring in rings) {
-
             if (ring.size < 2) continue
 
             for (i in ring.indices) {
-
                 val a = ring[i]
                 val b = ring[(i + 1) % ring.size]
 
                 val dx = b.first - a.first
                 val dy = b.second - a.second
 
-                val lengthSquared =
-                    dx * dx + dy * dy
+                val lengthSquared = dx * dx + dy * dy
 
-                if (lengthSquared <= 0.0) continue
+                if (lengthSquared == 0.0) continue
 
                 val t = (
                     ((point.x - a.first) * dx +
@@ -94,9 +85,7 @@ class ChurkinCameraBounds(
                     (point.y - y).pow(2)
 
                 if (distance < bestDistance) {
-
                     bestDistance = distance
-
                     nearest = Point(x, y)
                 }
             }
@@ -105,7 +94,7 @@ class ChurkinCameraBounds(
         return nearest
     }
 
-    // Ограничение движения карты краями экрана
+    // Ограничиваем перемещение карты краями экрана
     fun constrainViewport(
         projectedRings: List<List<Point>>,
         screenWidth: Int,
@@ -114,59 +103,48 @@ class ChurkinCameraBounds(
         offsetY: Double
     ): CameraOffset {
 
-        if (
-            projectedRings.isEmpty() ||
-            screenWidth <= 0 ||
-            screenHeight <= 0
-        ) {
+        if (screenWidth <= 0 || screenHeight <= 0) {
             return CameraOffset(offsetX, offsetY)
         }
 
-        var minX = Double.POSITIVE_INFINITY
-        var maxX = Double.NEGATIVE_INFINITY
+        val points = projectedRings.flatten()
 
-        var minY = Double.POSITIVE_INFINITY
-        var maxY = Double.NEGATIVE_INFINITY
-
-        for (ring in projectedRings) {
-
-            for (point in ring) {
-
-                minX = min(minX, point.x)
-                maxX = max(maxX, point.x)
-
-                minY = min(minY, point.y)
-                maxY = max(maxY, point.y)
-            }
-        }
-
-        if (
-            !minX.isFinite() ||
-            !maxX.isFinite() ||
-            !minY.isFinite() ||
-            !maxY.isFinite()
-        ) {
+        if (points.isEmpty()) {
             return CameraOffset(offsetX, offsetY)
         }
 
-        val w = screenWidth.toDouble()
-        val h = screenHeight.toDouble()
+        val minX = points.minOf { it.x }
+        val maxX = points.maxOf { it.x }
+        val minY = points.minOf { it.y }
+        val maxY = points.maxOf { it.y }
 
-        val mapWidth = maxX - minX
-        val mapHeight = maxY - minY
+        val screenW = screenWidth.toDouble()
+        val screenH = screenHeight.toDouble()
 
-        val newX: Double
-        val newY: Double
+        val mapW = maxX - minX
+        val mapH = maxY - minY
 
-        // Горизонтальное ограничение
-        newX = if (mapWidth >= w) {
-
+        val newX = if (mapW >= screenW) {
             offsetX.coerceIn(
-                w - maxX,
+                screenW - maxX,
                 -minX
             )
-
         } else {
-
-            w / 2.0 - (minX + maxX) / 2.0
+            screenW / 2.0 - (minX + maxX) / 2.0
         }
+
+        val newY = if (mapH >= screenH) {
+            offsetY.coerceIn(
+                screenH - maxY,
+                -minY
+            )
+        } else {
+            screenH / 2.0 - (minY + maxY) / 2.0
+        }
+
+        return CameraOffset(
+            x = newX,
+            y = newY
+        )
+    }
+}
